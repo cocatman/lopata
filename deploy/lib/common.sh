@@ -44,17 +44,24 @@ apply_stub_domain() {
   printf '%s' "$html"
 }
 
+valid_domain() {
+  local domain="${1-}"
+  [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]
+}
+
 _proxy_location() {
   local path="$1"
   local port="$2"
   local scheme="$3"
   local verify=""
+  local bare="${path%/}"
 
   if [[ "$scheme" == "https" ]]; then
     verify=$'        proxy_ssl_verify off;\n'
   fi
 
   cat <<EOF
+    location = ${bare} { return 301 ${path}; }
     location ${path} {
         proxy_pass ${scheme}://127.0.0.1:${port}${path};
 ${verify}        proxy_http_version 1.1;
@@ -66,6 +73,7 @@ ${verify}        proxy_http_version 1.1;
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
+        client_max_body_size 50m;
     }
 EOF
 }
@@ -137,12 +145,27 @@ $(_proxy_location "$sub_path" "$sub_port" "$sub_scheme")
 EOF
 }
 
+render_nginx_site() {
+  render_nginx_http "$1"
+  printf '\n'
+  render_nginx_https "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+}
+
 require_secret_path() {
   local path="${2-}"
   if [[ -z "$path" || "$path" == "/" ]]; then
     return 1
   fi
   return 0
+}
+
+require_flag_value() {
+  local flag="$1"
+  local value="${2-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    printf 'missing value for %s\n' "$flag" >&2
+    return 1
+  fi
 }
 
 parse_args() {
@@ -154,39 +177,52 @@ parse_args() {
   SKIP_UFW="${SKIP_UFW:-0}"
   SKIP_3XUI="${SKIP_3XUI:-0}"
   ASSUME_YES="${ASSUME_YES:-0}"
+  FORCE_RECONFIGURE="${FORCE_RECONFIGURE:-0}"
+  USERNAME_SET="${USERNAME_SET:-0}"
+  PASSWORD_SET="${PASSWORD_SET:-0}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --domain)
-        DOMAIN="${2-}"
+        require_flag_value "$1" "${2-}" || return 1
+        DOMAIN="$2"
         shift 2
         ;;
       --email)
-        EMAIL="${2-}"
+        require_flag_value "$1" "${2-}" || return 1
+        EMAIL="$2"
         shift 2
         ;;
       --panel-path)
-        PANEL_PATH="${2-}"
+        require_flag_value "$1" "${2-}" || return 1
+        PANEL_PATH="$2"
         shift 2
         ;;
       --sub-path)
-        SUB_PATH="${2-}"
+        require_flag_value "$1" "${2-}" || return 1
+        SUB_PATH="$2"
         shift 2
         ;;
       --panel-port)
-        PANEL_PORT="${2-}"
+        require_flag_value "$1" "${2-}" || return 1
+        PANEL_PORT="$2"
         shift 2
         ;;
       --sub-port)
-        SUB_PORT="${2-}"
+        require_flag_value "$1" "${2-}" || return 1
+        SUB_PORT="$2"
         shift 2
         ;;
       --username)
-        USERNAME="${2-}"
+        require_flag_value "$1" "${2-}" || return 1
+        USERNAME="$2"
+        USERNAME_SET=1
         shift 2
         ;;
       --password)
-        PASSWORD="${2-}"
+        require_flag_value "$1" "${2-}" || return 1
+        PASSWORD="$2"
+        PASSWORD_SET=1
         shift 2
         ;;
       --skip-dns-check)
@@ -199,6 +235,10 @@ parse_args() {
         ;;
       --skip-3xui)
         SKIP_3XUI=1
+        shift
+        ;;
+      --force-reconfigure)
+        FORCE_RECONFIGURE=1
         shift
         ;;
       --yes|-y)

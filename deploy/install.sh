@@ -29,9 +29,11 @@ usage() {
   --skip-dns-check       не сверять DNS с публичным IP
   --skip-ufw             не трогать ufw
   --skip-3xui            не ставить панель, только Nginx и заглушку
+  --force-reconfigure    перенастроить уже стоящий 3x-ui без нашего state-файла
   --yes                  не спрашивать подтверждение
 
 Повторный запуск безопасен: секреты берутся из /root/gloru-bootstrap.env.
+Чужую уже установленную панель скрипт сам не переписывает.
 EOF
 }
 
@@ -44,10 +46,25 @@ log() {
   printf '==> %s\n' "$*"
 }
 
+CLEANUP_FILES=()
+INSTALLED_XUI_THIS_RUN=0
+
+remember_temp() {
+  CLEANUP_FILES+=("$1")
+}
+
+cleanup() {
+  if [[ "${#CLEANUP_FILES[@]}" -gt 0 ]]; then
+    rm -f "${CLEANUP_FILES[@]}"
+  fi
+}
+
+trap cleanup EXIT
+
 here() {
   local src="${BASH_SOURCE[0]:-}"
   if [[ -n "$src" && -f "$src" ]]; then
-    cd "$(dirname "$src")" && pwd
+    (cd "$(dirname "$src")" && pwd)
   else
     printf ''
   fi
@@ -64,11 +81,24 @@ load_common() {
   fi
 
   repo_common="$(mktemp)"
+  remember_temp "$repo_common"
   curl -fsSL "${BOOTSTRAP_RAW_BASE}/deploy/lib/common.sh" -o "$repo_common" \
     || die "не удалось загрузить deploy/lib/common.sh"
   # shellcheck disable=SC1090
   source "$repo_common"
   REPO_ROOT=""
+}
+
+xui_installed() {
+  systemctl list-unit-files --type=service 2>/dev/null | grep -qE '^x-ui(\.service)?'
+}
+
+refuse_foreign_xui() {
+  [[ "$SKIP_3XUI" -eq 0 ]] || return 0
+  xui_installed || return 0
+  [[ "${FORCE_RECONFIGURE:-0}" -eq 1 ]] && return 0
+  [[ -r "$BOOTSTRAP_STATE" ]] && return 0
+  die "на сервере уже есть 3x-ui, а ${BOOTSTRAP_STATE} нет. Если это ваш сервер, передайте --force-reconfigure"
 }
 
 need_root() {
@@ -106,6 +136,9 @@ fill_secrets() {
   SUB_PATH="$(choose_secret_path sub "${SUB_PATH:-}" 12)"
   [[ -n "${USERNAME:-}" ]] || USERNAME="$(random_token 10)"
   [[ -n "${PASSWORD:-}" ]] || PASSWORD="$(random_token 20)"
+  valid_domain "$DOMAIN" || die "некорректный домен: ${DOMAIN}"
+  [[ "$PANEL_PATH" != "$SUB_PATH" ]] || die "пути панели и подписки совпадают"
+  [[ "$PANEL_PORT" != "$SUB_PORT" ]] || die "порты панели и подписки совпадают"
 }
 
 confirm_plan() {
@@ -143,9 +176,18 @@ print(socket.gethostbyname("${DOMAIN}"))
 PY
 }
 
+domain_ipv6() {
+  command -v getent >/dev/null 2>&1 || return 0
+  getent ahostsv6 "$DOMAIN" | awk '$1 !~ /^(fe80|::1)/ {print $1; exit}'
+}
+
+local_ipv6() {
+  ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1
+}
+
 check_dns() {
   [[ "$SKIP_DNS_CHECK" -eq 0 ]] || return 0
-  local want have
+  local want have want6 have6
   want="$(public_ip)"
   have="$(domain_ip || true)"
   [[ -n "$want" ]] || die "не удалось определить публичный IPv4 сервера"
@@ -154,13 +196,21 @@ check_dns() {
     die "DNS ${DOMAIN} = ${have}, а IP сервера = ${want}. Поправьте A-запись или используйте --skip-dns-check"
   fi
   log "DNS ${DOMAIN} указывает на ${want}"
+
+  have6="$(domain_ipv6 || true)"
+  if [[ -n "$have6" ]]; then
+    want6="$(local_ipv6 || true)"
+    [[ -n "$want6" ]] || die "у ${DOMAIN} есть AAAA ${have6}, а на сервере нет глобального IPv6. Уберите AAAA или используйте --skip-dns-check"
+    [[ "$have6" == "$want6" ]] || die "AAAA ${DOMAIN} = ${have6}, IPv6 сервера = ${want6}"
+    log "AAAA ${DOMAIN} указывает на ${want6}"
+  fi
 }
 
 install_packages() {
   log "ставим пакеты"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq nginx certbot curl sqlite3 ufw openssl ca-certificates dnsutils >/dev/null
+  apt-get install -y -qq nginx certbot curl sqlite3 ufw openssl ca-certificates dnsutils iproute2 >/dev/null
 }
 
 install_xui() {
@@ -168,7 +218,7 @@ install_xui() {
     log "пропуск установки 3x-ui"
     return 0
   fi
-  if systemctl list-unit-files --type=service 2>/dev/null | grep -q '^x-ui'; then
+  if xui_installed; then
     log "3x-ui уже установлен"
     return 0
   fi
@@ -176,6 +226,7 @@ install_xui() {
   log "ставим 3x-ui в тихом режиме"
   local installer
   installer="$(mktemp)"
+  remember_temp "$installer"
   curl -fsSL "$XUI_INSTALL_URL" -o "$installer"
   XUI_NONINTERACTIVE=1 \
     XUI_SSL_MODE=none \
@@ -184,6 +235,11 @@ install_xui() {
     XUI_PANEL_PORT="$PANEL_PORT" \
     XUI_WEB_BASE_PATH="${PANEL_PATH#/}" \
     bash "$installer"
+  INSTALLED_XUI_THIS_RUN=1
+}
+
+sqlite_exec() {
+  sqlite3 -cmd '.timeout 5000' "$XUI_DB" "$1"
 }
 
 set_xui_setting() {
@@ -191,12 +247,16 @@ set_xui_setting() {
   local value="$2"
   local count
   [[ -f "$XUI_DB" ]] || die "нет базы 3x-ui: ${XUI_DB}"
-  count="$(sqlite3 "$XUI_DB" "SELECT COUNT(*) FROM settings WHERE key='$(sql_escape "$key")';")"
+  count="$(sqlite_exec "SELECT COUNT(*) FROM settings WHERE key='$(sql_escape "$key")';")"
   if [[ "$count" -gt 0 ]]; then
-    sqlite3 "$XUI_DB" "UPDATE settings SET value='$(sql_escape "$value")' WHERE key='$(sql_escape "$key")';"
+    sqlite_exec "UPDATE settings SET value='$(sql_escape "$value")' WHERE key='$(sql_escape "$key")';"
   else
-    sqlite3 "$XUI_DB" "INSERT INTO settings (key, value) VALUES ('$(sql_escape "$key")', '$(sql_escape "$value")');"
+    sqlite_exec "INSERT INTO settings (key, value) VALUES ('$(sql_escape "$key")', '$(sql_escape "$value")');"
   fi
+}
+
+should_apply_credentials() {
+  [[ "${INSTALLED_XUI_THIS_RUN:-0}" -eq 1 || "${USERNAME_SET:-0}" -eq 1 || "${PASSWORD_SET:-0}" -eq 1 ]]
 }
 
 configure_xui() {
@@ -206,12 +266,22 @@ configure_xui() {
   [[ -x "$XUI_BIN" ]] || die "не найден ${XUI_BIN}"
 
   log "привязываем панель к 127.0.0.1"
-  "$XUI_BIN" setting \
-    -username "$USERNAME" \
-    -password "$PASSWORD" \
-    -port "$PANEL_PORT" \
-    -webBasePath "$PANEL_PATH" \
-    -listenIP 127.0.0.1
+  systemctl stop x-ui >/dev/null 2>&1 || true
+
+  if should_apply_credentials; then
+    "$XUI_BIN" setting \
+      -username "$USERNAME" \
+      -password "$PASSWORD" \
+      -port "$PANEL_PORT" \
+      -webBasePath "$PANEL_PATH" \
+      -listenIP 127.0.0.1
+  else
+    log "логин и пароль панели не трогаем"
+    "$XUI_BIN" setting \
+      -port "$PANEL_PORT" \
+      -webBasePath "$PANEL_PATH" \
+      -listenIP 127.0.0.1
+  fi
 
   set_xui_setting webListen "127.0.0.1"
   set_xui_setting webPort "$PANEL_PORT"
@@ -230,8 +300,7 @@ configure_xui() {
   set_xui_setting trustedProxyCIDRs "127.0.0.1/32,::1/128"
 
   systemctl enable x-ui >/dev/null
-  systemctl restart x-ui
-  sleep 2
+  systemctl start x-ui
   systemctl is-active --quiet x-ui || die "x-ui не запустился"
 }
 
@@ -242,6 +311,7 @@ read_stub() {
     return 0
   fi
   remote="$(mktemp)"
+  remember_temp "$remote"
   if curl -fsSL "${BOOTSTRAP_RAW_BASE}/gloru-stub/index.html" -o "$remote"; then
     cat "$remote"
     return 0
@@ -268,7 +338,7 @@ write_nginx() {
   if [[ "$kind" == http ]]; then
     render_nginx_http "$DOMAIN" >"$NGINX_SITE"
   else
-    render_nginx_https \
+    render_nginx_site \
       "$DOMAIN" \
       "$PANEL_PATH" \
       "$PANEL_PORT" \
@@ -288,26 +358,50 @@ write_nginx() {
 detect_scheme() {
   local port="$1"
   local path="$2"
+  local code i
+  for i in $(seq 1 20); do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 "http://127.0.0.1:${port}${path}" || true)"
+    if [[ "$code" =~ ^(200|204|301|302|307|308|401|403)$ ]]; then
+      printf 'http\n'
+      return 0
+    fi
+    code="$(curl -skS -o /dev/null -w '%{http_code}' --connect-timeout 3 "https://127.0.0.1:${port}${path}" || true)"
+    if [[ "$code" =~ ^(200|204|301|302|307|308|401|403)$ ]]; then
+      printf 'https\n'
+      return 0
+    fi
+    sleep 1
+  done
+  die "3x-ui не отвечает на 127.0.0.1:${port}${path}"
+}
+
+verify_local_bind() {
+  local port="$1"
+  local name="$2"
+  local listeners
+  listeners="$(ss -lnt 2>/dev/null | awk '{print $4}' | grep -E ":${port}\$" || true)"
+  [[ -n "$listeners" ]] || die "${name} не слушает порт ${port}"
+  if printf '%s\n' "$listeners" | grep -Eq "^(0\\.0\\.0\\.0|\\*|\\[::\\]):${port}$"; then
+    die "${name} слушает ${port} на всех интерфейсах: ${listeners}"
+  fi
+  log "${name} слушает только localhost:${port}"
+}
+
+verify_via_nginx() {
   local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 "http://127.0.0.1:${port}${path}" || true)"
-  if [[ "$code" =~ ^(200|204|301|302|307|308|401|403)$ ]]; then
-    printf 'http\n'
-    return 0
+  code="$(curl -skS -o /dev/null -w '%{http_code}' --connect-timeout 5 \
+    --resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/" || true)"
+  [[ "$code" == "200" ]] || die "заглушка https://${DOMAIN}/ вернула ${code:-none}"
+  if [[ "$SKIP_3XUI" -eq 0 ]]; then
+    code="$(curl -skS -o /dev/null -w '%{http_code}' --connect-timeout 5 \
+      --resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}${PANEL_PATH}" || true)"
+    [[ "$code" =~ ^(200|204|301|302|307|308|401|403)$ ]] \
+      || die "панель https://${DOMAIN}${PANEL_PATH} вернула ${code:-none}"
   fi
-  code="$(curl -skS -o /dev/null -w '%{http_code}' --connect-timeout 3 "https://127.0.0.1:${port}${path}" || true)"
-  if [[ "$code" =~ ^(200|204|301|302|307|308|401|403)$ ]]; then
-    printf 'https\n'
-    return 0
-  fi
-  printf 'http\n'
 }
 
 issue_cert() {
-  if [[ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
-    log "сертификат ${DOMAIN} уже есть"
-    return 0
-  fi
-  log "выпускаем Let's Encrypt"
+  log "выпускаем или обновляем Let's Encrypt"
   certbot certonly \
     --webroot \
     -w /var/www/certbot \
@@ -325,11 +419,27 @@ EOF
   chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
 }
 
+ssh_listen_ports() {
+  local ports=""
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    ports="${SSH_CONNECTION##* }"
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ports="${ports} $(ss -lntp 2>/dev/null | awk '/sshd/{print $4}' | sed -E 's/.*:([0-9]+)$/\1/')"
+  fi
+  printf '%s\n' $ports 22 | awk 'NF && !seen[$1]++'
+}
+
 maybe_ufw() {
   [[ "$SKIP_UFW" -eq 0 ]] || return 0
   command -v ufw >/dev/null 2>&1 || return 0
-  log "открываем 22/80/443 в ufw"
-  ufw allow OpenSSH >/dev/null || ufw allow 22/tcp >/dev/null || true
+  local port
+  log "открываем SSH/80/443 в ufw"
+  ufw allow OpenSSH >/dev/null || true
+  while read -r port; do
+    [[ -n "$port" ]] || continue
+    ufw allow "${port}/tcp" >/dev/null || true
+  done < <(ssh_listen_ports)
   ufw allow 80/tcp >/dev/null
   ufw allow 443/tcp >/dev/null
   ufw --force enable >/dev/null
@@ -394,9 +504,11 @@ main() {
 
   need_root
   need_apt
+  refuse_foreign_xui
   fill_secrets
   confirm_plan
   install_packages
+  maybe_ufw
   check_dns
   install_xui
   configure_xui
@@ -410,10 +522,12 @@ main() {
     PANEL_SCHEME="$(detect_scheme "$PANEL_PORT" "$PANEL_PATH")"
     SUB_SCHEME="$(detect_scheme "$SUB_PORT" "$SUB_PATH")"
     log "бэкенд панели=${PANEL_SCHEME}, подписки=${SUB_SCHEME}"
+    verify_local_bind "$PANEL_PORT" "панель"
+    verify_local_bind "$SUB_PORT" "подписка"
   fi
 
   write_nginx https
-  maybe_ufw
+  verify_via_nginx
   save_state
   print_summary
 }

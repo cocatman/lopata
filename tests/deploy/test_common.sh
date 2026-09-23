@@ -70,24 +70,40 @@ assert_match "http uses requested server_name" 'server_name lab.example.com;' "$
 # --- render_nginx_https ---
 https_conf="$(render_nginx_https \
   'lab.example.com' \
-  '/VVAyxFyTZbVq31eO1K/' \
-  '23175' \
+  '/panel-test/' \
+  '2054' \
   'http' \
-  '/wegaw/' \
+  '/sub-test/' \
   '2096' \
   'http')"
 
 assert_match "https uses old-nginx http2 listen" 'listen 443 ssl http2;' "$https_conf"
 assert_match "https uses domain cert" 'ssl_certificate     /etc/letsencrypt/live/lab.example.com/fullchain.pem;' "$https_conf"
 assert_match "https roots decoy site" 'root /var/www/stub;' "$https_conf"
-assert_match "https proxies panel path" 'location /VVAyxFyTZbVq31eO1K/' "$https_conf"
+assert_match "https proxies panel path" 'location /panel-test/' "$https_conf"
 assert_match "https panel proxy_pass keeps slash" \
-  'proxy_pass http://127.0.0.1:23175/VVAyxFyTZbVq31eO1K/;' \
+  'proxy_pass http://127.0.0.1:2054/panel-test/;' \
   "$https_conf"
-assert_match "https proxies subscription path" 'location /wegaw/' "$https_conf"
+assert_match "https proxies subscription path" 'location /sub-test/' "$https_conf"
 assert_match "https sub proxy_pass keeps slash" \
-  'proxy_pass http://127.0.0.1:2096/wegaw/;' \
+  'proxy_pass http://127.0.0.1:2096/sub-test/;' \
   "$https_conf"
+assert_match "https redirects slashless panel path" \
+  'location = /panel-test \{ return 301 /panel-test/; \}' \
+  "$https_conf"
+
+site_conf="$(render_nginx_site \
+  'lab.example.com' \
+  '/panel-test/' \
+  '2054' \
+  'http' \
+  '/sub-test/' \
+  '2096' \
+  'http')"
+assert_match "full site keeps port 80" 'listen 80;' "$site_conf"
+assert_match "full site keeps ACME on 80" 'location \^~ /\.well-known/acme-challenge/' "$site_conf"
+assert_match "full site keeps http redirect" 'return 301 https://\$host\$request_uri;' "$site_conf"
+assert_match "full site keeps 443" 'listen 443 ssl http2;' "$site_conf"
 assert_not_match "http backend does not disable ssl verify" \
   'proxy_ssl_verify off;' \
   "$https_conf"
@@ -131,6 +147,25 @@ if parse_args --domain 'lab.example.com'; then
   assert_eq "email is required" "1" "0"
 else
   assert_eq "parse_args rejects missing email" "1" "1"
+fi
+
+if parse_args --domain 'lab.example.com' --email 'ops@lab.example.com' --force-reconfigure --username 'adminx'; then
+  assert_eq "force-reconfigure flag" "1" "${FORCE_RECONFIGURE:-0}"
+  assert_eq "username-set flag" "1" "${USERNAME_SET:-0}"
+  assert_eq "password-set stays off" "0" "${PASSWORD_SET:-0}"
+else
+  assert_eq "parse_args extra flags should succeed" "0" "1"
+fi
+
+if valid_domain 'lab.example.com'; then
+  assert_eq "valid_domain accepts hostname" "0" "0"
+else
+  assert_eq "valid_domain accepts hostname" "0" "1"
+fi
+if valid_domain 'bad domain'; then
+  assert_eq "valid_domain rejects spaces" "1" "0"
+else
+  assert_eq "valid_domain rejects spaces" "1" "1"
 fi
 
 if [[ "$failures" -eq 0 ]]; then

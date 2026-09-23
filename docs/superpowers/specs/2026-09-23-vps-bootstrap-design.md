@@ -49,6 +49,12 @@ The script writes credentials to `/root/gloru-bootstrap.env` (mode 600)
 and prints the public panel URL, subscription base URI, and next steps
 for a Reality inbound on 443.
 
+The final Nginx site always keeps a port 80 server for ACME and
+HTTP→HTTPS redirect alongside the TLS server on 443.
+
+An already-installed 3x-ui without this repo's state file is left
+untouched unless `--force-reconfigure` is passed.
+
 ## Acceptance
 
 - `https://<domain>/` serves the infrastructure landing page.

@@ -45,9 +45,10 @@ curl -fsSL https://raw.githubusercontent.com/cocatman/lopata/main/deploy/install
 | `--username` / `--password` | свои учётки панели |
 | `--skip-dns-check` | если DNS ещё не доехал, но вы уверены |
 | `--skip-3xui` | только Nginx + заглушка + сертификат |
+| `--force-reconfigure` | перенастроить уже стоящий 3x-ui, если нет `/root/gloru-bootstrap.env` |
 | `--yes` | без вопроса «продолжить?» |
 
-Повторный запуск подхватывает секреты из `/root/gloru-bootstrap.env`.
+Повторный запуск подхватывает секреты из `/root/gloru-bootstrap.env` и не сбрасывает пароль панели, если вы не передали `--username` / `--password`. Если 3x-ui уже стоит, а state-файла нет, скрипт остановится и попросит `--force-reconfigure`.
 
 ## Что сделать после установки
 
