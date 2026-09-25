@@ -1,0 +1,44 @@
+{
+  "listen": "127.0.0.1",
+  "port": 8080,
+  "protocol": "vless",
+  "tag": "in-8080-xhttp",
+  "settings": {
+    "clients": [],
+    "decryption": "none",
+    "encryption": "none"
+  },
+  "sniffing": {
+    "enabled": true,
+    "destOverride": ["http", "tls", "quic", "fakedns"]
+  },
+  "streamSettings": {
+    "network": "xhttp",
+    "xhttpSettings": {
+      "path": "/api/stream",
+      "host": "",
+      "mode": "packet-up",
+      "xPaddingBytes": "100-1000",
+      "xPaddingObfsMode": true,
+      "xPaddingKey": "_dc",
+      "xPaddingHeader": "X-Cache",
+      "xPaddingPlacement": "queryInHeader",
+      "xPaddingMethod": "tokenish",
+      "scMaxBufferedPosts": 30,
+      "scStreamUpServerSecs": "20-80",
+      "uplinkHTTPMethod": "GET",
+      "noSSEHeader": false,
+      "noGRPCHeader": false,
+      "enableXmux": true,
+      "xmux": {
+        "maxConcurrency": "0",
+        "maxConnections": 2,
+        "cMaxReuseTimes": 0,
+        "hMaxRequestTimes": "100-200",
+        "hMaxReusableSecs": "300-600",
+        "hKeepAlivePeriod": 0
+      }
+    },
+    "security": "none"
+  }
+}
