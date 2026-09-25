@@ -59,13 +59,24 @@ curl -fsSL https://raw.githubusercontent.com/cocatman/lopata/main/deploy/install
 
 ## Вход через Яндекс CDN (вместо Reality на gloru)
 
-Две цепочки: `gloru.dpdns.org` (РФ Reality) → Финляндия; при желании Яндекс CDN **перед** `gloru.duckdns.org` (каскад на krotman/basehole). CDN не лечит хоп origin→krotman.
-План: `docs/superpowers/plans/2026-09-25-yandex-cdn-xhttp.md`.
+Две цепочки: `gloru.dpdns.org` (РФ Reality) → Финляндия; при желании Яндекс CDN **перед** `gloru.duckdns.org`.
+
+Выход в Финляндии (3x-ui на localhost, Reality на 443, без Nginx):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cocatman/lopata/cursor/infrastructure-landing-313e/deploy/install-exit.sh \
+  | sudo bash
+```
+
+Скрипт ставит панель, слушает только `127.0.0.1`, создаёт inbound VLESS Reality и печатает `vless://`. Этот URI вставить исходящим на `secondgloru` (не подписку `:2096`). Секреты: `/root/fi-exit.env`.
+
+План каскада: `docs/superpowers/plans/2026-09-25-yandex-cdn-xhttp.md`.
 
 ## Проверка локально
 
 ```bash
 bash tests/deploy/test_common.sh
+bash tests/deploy/test_exit.sh
 ```
 
-Тесты покрывают нормализацию путей, рендер Nginx и разбор аргументов. Сам установщик рассчитан на VPS, не на этот репозиторий.
+Тесты покрывают нормализацию путей, рендер Nginx, разбор аргументов и Reality-хелперы выхода. Сами установщики рассчитаны на VPS, не на этот репозиторий.
