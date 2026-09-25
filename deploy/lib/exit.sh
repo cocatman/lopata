@@ -19,6 +19,13 @@ reality_keys_complete() {
   [[ -n "${UUID:-}" && -n "${PRIVATE_KEY:-}" && -n "${PUBLIC_KEY:-}" && -n "${SHORT_ID:-}" ]]
 }
 
+missing_commands() {
+  local cmd
+  for cmd in "$@"; do
+    command -v "$cmd" >/dev/null 2>&1 || printf '%s\n' "$cmd"
+  done
+}
+
 should_refuse_foreign_xui() {
   local installed="${1:-0}"
   local has_state="${2:-0}"

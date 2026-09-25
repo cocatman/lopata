@@ -129,6 +129,14 @@ else
   assert_eq "allow fresh host without x-ui" "1" "1"
 fi
 
+assert_eq "missing_commands finds absent binary" \
+  "definitely-not-a-cmd-xyz" \
+  "$(missing_commands definitely-not-a-cmd-xyz)"
+assert_eq "missing_commands skips present bash" "" "$(missing_commands bash)"
+assert_eq "missing_commands reports only the missing one" \
+  "definitely-not-a-cmd-xyz" \
+  "$(missing_commands bash definitely-not-a-cmd-xyz)"
+
 assert_eq "extract csrf obj" "tok-abc" "$(extract_json_obj '{"success":true,"obj":"tok-abc"}')"
 assert_eq "extract csrf empty on failure json" "" "$(extract_json_obj '{"success":false,"msg":"no"}')"
 assert_eq "extract csrf empty on garbage" "" "$(extract_json_obj 'not-json')"

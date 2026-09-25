@@ -411,9 +411,19 @@ load_state
 fill_secrets
 save_state
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq curl openssl ca-certificates ufw iproute2 sqlite3 python3 >/dev/null
+need_pkgs="$(missing_commands curl openssl sqlite3 python3 | tr '\n' ' ')"
+need_pkgs="${need_pkgs%" "}"
+if [[ -n "$need_pkgs" ]]; then
+  export DEBIAN_FRONTEND=noninteractive
+  if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+     || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
+    die "apt занят (unattended-upgrades). Подождите или повторите: пакеты ещё нужны: ${need_pkgs}"
+  fi
+  apt-get update -qq
+  apt-get install -y -qq curl openssl ca-certificates ufw iproute2 sqlite3 python3 >/dev/null
+else
+  log "пакеты уже стоят, apt пропускаем"
+fi
 
 if ! xui_installed; then
   log "ставим 3x-ui"
