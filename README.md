@@ -57,6 +57,11 @@ curl -fsSL https://raw.githubusercontent.com/cocatman/lopata/main/deploy/install
 3. Если Reality должен занять публичный 443, перенесите Nginx на `127.0.0.1:8443` и поставьте Reality dest в `127.0.0.1:8443`.
 4. Клиентские ссылки берите из панели; URI подписки уже `https://<домен>/<секрет-подписки>/`.
 
+## Вход через Яндекс CDN (вместо Reality на gloru)
+
+Клиент из РФ идёт на `gloru.dpdns.org` → Яндекс CDN → origin на basehole (VLESS+XHTTP).
+План и шаблоны: `docs/superpowers/plans/2026-09-25-yandex-cdn-xhttp.md`, `deploy/cdn/`.
+
 ## Проверка локально
 
 ```bash
