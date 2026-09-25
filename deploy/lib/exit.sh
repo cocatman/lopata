@@ -48,6 +48,26 @@ vless_reality_uri() {
     "$uuid" "$address" "$port" "$sni" "$pbk" "$sid" "$remark"
 }
 
+extract_json_obj() {
+  local text="${1-}"
+  printf '%s' "$text" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if not data.get("success"):
+    raise SystemExit(0)
+obj = data.get("obj", "")
+if obj is None:
+    raise SystemExit(0)
+if isinstance(obj, (dict, list)):
+    sys.stdout.write(json.dumps(obj, separators=(",", ":")))
+else:
+    sys.stdout.write(str(obj))
+'
+}
+
 json_escape() {
   local value="${1-}"
   value="${value//\\/\\\\}"

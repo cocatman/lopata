@@ -196,33 +196,52 @@ panel_base() {
   printf 'http://127.0.0.1:%s%s' "$PANEL_PORT" "$PANEL_PATH"
 }
 
+refresh_csrf_token() {
+  local cookie="$1"
+  local dest="$2"
+  local base json token
+  base="$(panel_base)"
+  json="$(curl -sS -c "$cookie" -b "$cookie" --max-time 8 "${base}csrf-token" 2>/dev/null || true)"
+  token="$(extract_json_obj "$json")"
+  if [[ -z "$token" ]]; then
+    json="$(curl -sS -c "$cookie" -b "$cookie" --max-time 8 "${base}panel/csrf-token" 2>/dev/null || true)"
+    token="$(extract_json_obj "$json")"
+  fi
+  [[ -n "$token" ]] || return 1
+  printf '%s' "$token" >"$dest"
+}
+
 try_panel_login() {
   local cookie="$1"
-  local base body
+  local csrf_file="$2"
+  local base body token resp
   base="$(panel_base)"
+  refresh_csrf_token "$cookie" "$csrf_file" || return 1
+  token="$(cat "$csrf_file")"
   body="$(printf '{"username":%s,"password":%s}' \
     "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$USERNAME")" \
     "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$PASSWORD")")"
-  if curl -sS -c "$cookie" -b "$cookie" \
-      -H 'Content-Type: application/json' \
-      -d "$body" \
-      "${base}login" 2>/dev/null | grep -qi '"success"[[:space:]]*:[[:space:]]*true'; then
-    return 0
+  resp="$(curl -sS -c "$cookie" -b "$cookie" --max-time 10 \
+    -H 'Content-Type: application/json' \
+    -H "X-CSRF-Token: ${token}" \
+    -d "$body" \
+    "${base}login" 2>/dev/null || true)"
+  if ! printf '%s\n' "$resp" | grep -qi '"success"[[:space:]]*:[[:space:]]*true'; then
+    log "логин панели: ${resp:-empty}"
+    return 1
   fi
-  curl -sS -c "$cookie" -b "$cookie" \
-    -H 'Content-Type: application/x-www-form-urlencoded' \
-    --data-urlencode "username=${USERNAME}" \
-    --data-urlencode "password=${PASSWORD}" \
-    "${base}login" 2>/dev/null | grep -qi '"success"[[:space:]]*:[[:space:]]*true'
+  refresh_csrf_token "$cookie" "$csrf_file" || true
 }
 
 add_inbound_via_api() {
-  local cookie payload resp
+  local cookie payload csrf_file resp token
   cookie="$(mktemp)"
   payload="$(mktemp)"
+  csrf_file="$(mktemp)"
   remember_temp "$cookie"
   remember_temp "$payload"
-  try_panel_login "$cookie" || return 1
+  remember_temp "$csrf_file"
+  try_panel_login "$cookie" "$csrf_file" || return 1
   python3 - "$SETTINGS_JSON" "$STREAM_JSON" "$SNIFF_JSON" "$payload" <<'PY'
 import json, sys
 settings = json.loads(open(sys.argv[1], encoding="utf-8").read())
@@ -244,13 +263,21 @@ body = {
 }
 open(sys.argv[4], "w", encoding="utf-8").write(json.dumps(body))
 PY
-  resp="$(curl -sS -b "$cookie" -H 'Content-Type: application/json' \
+  token="$(cat "$csrf_file" 2>/dev/null || true)"
+  resp="$(curl -sS -c "$cookie" -b "$cookie" --max-time 15 \
+    -H 'Content-Type: application/json' \
+    -H "X-CSRF-Token: ${token}" \
     -d @"$payload" "$(panel_base)panel/api/inbounds/add" || true)"
-  printf '%s\n' "$resp" | grep -qi '"success"[[:space:]]*:[[:space:]]*true'
+  if printf '%s\n' "$resp" | grep -qi '"success"[[:space:]]*:[[:space:]]*true'; then
+    return 0
+  fi
+  log "API add inbound: ${resp:-empty}"
+  return 1
 }
 
 add_inbound_via_sqlite() {
-  systemctl stop x-ui >/dev/null 2>&1 || true
+  timeout 20 systemctl stop x-ui >/dev/null 2>&1 || systemctl kill -s TERM x-ui >/dev/null 2>&1 || true
+  sleep 1
   if ! python3 - "$XUI_DB" "$SETTINGS_JSON" "$STREAM_JSON" "$SNIFF_JSON" <<'PY'
 import sqlite3, sys
 
@@ -258,24 +285,29 @@ db, settings_path, stream_path, sniff_path = sys.argv[1:5]
 settings = open(settings_path, encoding="utf-8").read()
 stream = open(stream_path, encoding="utf-8").read()
 sniff = open(sniff_path, encoding="utf-8").read()
-con = sqlite3.connect(db)
+con = sqlite3.connect(db, timeout=15)
+con.execute("PRAGMA busy_timeout=15000")
 cur = con.cursor()
 if cur.execute("SELECT COUNT(*) FROM inbounds WHERE port=443").fetchone()[0]:
     raise SystemExit(0)
 cols = {row[1] for row in cur.execute("PRAGMA table_info(inbounds)")}
+stream_col = "stream_settings" if "stream_settings" in cols else "streamSettings"
 row = {
     "user_id": 1,
     "up": 0,
     "down": 0,
     "total": 0,
+    "all_time": 0,
     "remark": "fi-exit",
     "enable": 1,
     "expiry_time": 0,
+    "traffic_reset": "never",
+    "last_traffic_reset_time": 0,
     "listen": "",
     "port": 443,
     "protocol": "vless",
     "settings": settings,
-    "stream_settings": stream,
+    stream_col: stream,
     "tag": "inbound-443",
     "sniffing": sniff,
 }
@@ -318,12 +350,24 @@ PY
   return 1
 }
 
+delete_inbound_443() {
+  timeout 20 systemctl stop x-ui >/dev/null 2>&1 || true
+  sqlite3 -cmd '.timeout 5000' "$XUI_DB" "DELETE FROM inbounds WHERE port=443;" >/dev/null || true
+  sqlite3 -cmd '.timeout 5000' "$XUI_DB" \
+    "DELETE FROM client_traffics WHERE inbound_id NOT IN (SELECT id FROM inbounds);" >/dev/null || true
+  systemctl start x-ui >/dev/null 2>&1 || true
+}
+
 ensure_reality_inbound() {
-  if inbound_port_exists; then
+  if inbound_port_exists && port_in_use 443; then
     log "inbound на 443 уже есть"
     return 0
   fi
-  if port_in_use 443; then
+  if inbound_port_exists && ! port_in_use 443; then
+    log "inbound в базе есть, но :443 молчит — пересоздаём"
+    delete_inbound_443
+  fi
+  if port_in_use 443 && ! inbound_port_exists; then
     die "порт 443 уже занят (не x-ui inbound). Освободите его — Reality должен слушать :443"
   fi
   write_json_temps

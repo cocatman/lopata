@@ -129,6 +129,10 @@ else
   assert_eq "allow fresh host without x-ui" "1" "1"
 fi
 
+assert_eq "extract csrf obj" "tok-abc" "$(extract_json_obj '{"success":true,"obj":"tok-abc"}')"
+assert_eq "extract csrf empty on failure json" "" "$(extract_json_obj '{"success":false,"msg":"no"}')"
+assert_eq "extract csrf empty on garbage" "" "$(extract_json_obj 'not-json')"
+
 if [[ "$failures" -eq 0 ]]; then
   printf '\nAll checks passed.\n'
   exit 0
