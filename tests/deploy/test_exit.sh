@@ -92,6 +92,43 @@ assert_match "stream firefox fingerprint" '"fingerprint": "firefox"' "$stream"
 assert_match "stream reality security" '"security": "reality"' "$stream"
 assert_not_match "min client ver stays empty string" '"minClientVer": "[^"]+"' "$stream"
 
+# --- reality_keys_complete is all-or-nothing ---
+UUID="" PRIVATE_KEY="" PUBLIC_KEY="" SHORT_ID=""
+if reality_keys_complete; then
+  assert_eq "incomplete keys rejected" "1" "0"
+else
+  assert_eq "incomplete keys rejected" "1" "1"
+fi
+UUID="u" PRIVATE_KEY="priv" PUBLIC_KEY="" SHORT_ID="sid"
+if reality_keys_complete; then
+  assert_eq "partial keys rejected" "1" "0"
+else
+  assert_eq "partial keys rejected" "1" "1"
+fi
+UUID="u" PRIVATE_KEY="priv" PUBLIC_KEY="pub" SHORT_ID="sid"
+if reality_keys_complete; then
+  assert_eq "complete keys accepted" "0" "0"
+else
+  assert_eq "complete keys accepted" "0" "1"
+fi
+
+# --- refuse foreign 3x-ui without state ---
+if should_refuse_foreign_xui 1 0; then
+  assert_eq "refuse installed x-ui without state" "0" "0"
+else
+  assert_eq "refuse installed x-ui without state" "0" "1"
+fi
+if should_refuse_foreign_xui 1 1; then
+  assert_eq "allow installed x-ui with state" "1" "0"
+else
+  assert_eq "allow installed x-ui with state" "1" "1"
+fi
+if should_refuse_foreign_xui 0 0; then
+  assert_eq "allow fresh host without x-ui" "1" "0"
+else
+  assert_eq "allow fresh host without x-ui" "1" "1"
+fi
+
 if [[ "$failures" -eq 0 ]]; then
   printf '\nAll checks passed.\n'
   exit 0

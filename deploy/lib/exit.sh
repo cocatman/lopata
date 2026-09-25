@@ -15,6 +15,16 @@ _x25519_field() {
   '
 }
 
+reality_keys_complete() {
+  [[ -n "${UUID:-}" && -n "${PRIVATE_KEY:-}" && -n "${PUBLIC_KEY:-}" && -n "${SHORT_ID:-}" ]]
+}
+
+should_refuse_foreign_xui() {
+  local installed="${1:-0}"
+  local has_state="${2:-0}"
+  [[ "$installed" -eq 1 && "$has_state" -eq 0 ]]
+}
+
 parse_x25519_output() {
   local text="${1-}"
   X25519_PRIVATE=""

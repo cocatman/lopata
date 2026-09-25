@@ -128,6 +128,29 @@ port_in_use() {
   ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq ":${port}\$"
 }
 
+verify_local_bind() {
+  local port="$1"
+  local name="$2"
+  local listeners
+  listeners="$(ss -lnt 2>/dev/null | awk '{print $4}' | grep -E ":${port}\$" || true)"
+  [[ -n "$listeners" ]] || die "${name} не слушает порт ${port}"
+  if printf '%s\n' "$listeners" | grep -Eq "^(0\\.0\\.0\\.0|\\*|\\[::\\]):${port}$"; then
+    die "${name} слушает ${port} на всех интерфейсах: ${listeners}"
+  fi
+  log "${name} слушает только localhost:${port}"
+}
+
+ssh_listen_ports() {
+  local ports=""
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    ports="${SSH_CONNECTION##* }"
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ports="${ports} $(ss -lntp 2>/dev/null | awk '/sshd/{print $4}' | sed -E 's/.*:([0-9]+)$/\1/')"
+  fi
+  printf '%s\n' $ports 22 | awk 'NF && !seen[$1]++'
+}
+
 inbound_port_exists() {
   [[ -f "$XUI_DB" ]] || return 1
   local count
@@ -137,20 +160,24 @@ inbound_port_exists() {
 
 generate_reality_keys() {
   local xray_bin keys
-  if [[ -n "${UUID:-}" && -n "${PRIVATE_KEY:-}" && -n "${PUBLIC_KEY:-}" && -n "${SHORT_ID:-}" ]]; then
+  if reality_keys_complete; then
     log "ключи Reality уже есть в ${STATE}"
     return 0
   fi
+  UUID=""
+  PRIVATE_KEY=""
+  PUBLIC_KEY=""
+  SHORT_ID=""
   xray_bin="$(ls /usr/local/x-ui/bin/xray* 2>/dev/null | head -1 || true)"
   [[ -n "$xray_bin" ]] || die "нет бинарника xray"
   keys="$("$xray_bin" x25519)"
   parse_x25519_output "$keys"
   [[ -n "${X25519_PRIVATE}" && -n "${X25519_PUBLIC}" ]] \
     || die "xray x25519 не вернул пару ключей:\n${keys}"
-  PRIVATE_KEY="${PRIVATE_KEY:-$X25519_PRIVATE}"
-  PUBLIC_KEY="${PUBLIC_KEY:-$X25519_PUBLIC}"
-  UUID="${UUID:-$("$xray_bin" uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)}"
-  SHORT_ID="${SHORT_ID:-$(openssl rand -hex 8)}"
+  PRIVATE_KEY="$X25519_PRIVATE"
+  PUBLIC_KEY="$X25519_PUBLIC"
+  UUID="$("$xray_bin" uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  SHORT_ID="$(openssl rand -hex 8)"
 }
 
 write_json_temps() {
@@ -328,12 +355,17 @@ load_libs
 [[ "$(id -u)" -eq 0 ]] || die "нужен root"
 command -v apt-get >/dev/null || die "нужен Ubuntu/Debian"
 
-if xui_installed && [[ ! -f "$STATE" ]]; then
+has_state=0
+[[ -f "$STATE" ]] && has_state=1
+installed=0
+xui_installed && installed=1
+if should_refuse_foreign_xui "$installed" "$has_state"; then
   die "3x-ui уже стоит, а ${STATE} нет. Если это чистая FI — удалите /etc/x-ui и /usr/local/x-ui"
 fi
 
 load_state
 fill_secrets
+save_state
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -358,6 +390,7 @@ fi
 [[ -f "$XUI_DB" ]] || die "нет базы 3x-ui: ${XUI_DB}"
 
 log "панель только на 127.0.0.1"
+systemctl stop x-ui >/dev/null 2>&1 || true
 if [[ "$INSTALLED_XUI_THIS_RUN" -eq 1 ]]; then
   "$XUI_BIN" setting \
     -username "$USERNAME" \
@@ -381,10 +414,11 @@ set_xui_setting subEnable "false"
 set_xui_setting subListen "127.0.0.1"
 
 systemctl enable x-ui >/dev/null
-systemctl restart x-ui
+systemctl start x-ui
 sleep 2
 systemctl is-active --quiet x-ui || die "x-ui не запустился"
 wait_for_listen "$PANEL_PORT" || die "панель 3x-ui не слушает :${PANEL_PORT}"
+verify_local_bind "$PANEL_PORT" "панель 3x-ui"
 
 generate_reality_keys
 save_state
@@ -394,12 +428,19 @@ sleep 2
 systemctl is-active --quiet x-ui || die "x-ui не запустился после inbound"
 
 if ! wait_for_listen 443; then
-  log "предупреждение: :443 ещё не слушает — откройте панель, Save inbound, Restart Xray"
+  log "ещё раз поднимаем Xray"
+  "$XUI_BIN" restart >/dev/null 2>&1 || systemctl restart x-ui
+  sleep 2
 fi
+wait_for_listen 443 || die "Xray не слушает :443. Секреты в ${STATE}. Откройте панель, Save inbound, Restart Xray и запустите скрипт снова"
 
-ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null
+ufw allow OpenSSH >/dev/null 2>&1 || true
+while read -r ssh_port; do
+  [[ -n "$ssh_port" ]] || continue
+  ufw allow "${ssh_port}/tcp" >/dev/null || true
+done < <(ssh_listen_ports)
 ufw allow 443/tcp >/dev/null
-ufw --force enable >/dev/null || true
+ufw --force enable >/dev/null
 
 pub_ip="$(curl -4 -fsS --max-time 8 https://api.ipify.org || true)"
 share="$(vless_reality_uri "$UUID" "${pub_ip:-IP-ФИНЛЯНДИИ}" 443 "$PUBLIC_KEY" "$SHORT_ID" "$SNI" "$REMARK")"
