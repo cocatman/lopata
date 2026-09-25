@@ -1,12 +1,22 @@
 # Yandex CDN + VLESS XHTTP Implementation Plan
 
-> **For agentic workers:** This is an operations plan for live VPS (basehole + DNS + Yandex Cloud). Do not take public :443 from Reality until Nginx and the panel-on-20321 path are confirmed.
+> **For agentic workers:** Origin is **krotman** (`krotman.duckdns.org`, `82.22.36.141`), not basehole. Nginx there already owns public :443 — add an XHTTP location, do not rebuild the site or steal :443 from Reality on another box.
 
-**Goal:** Клиент из РФ ходит на `gloru.dpdns.org` через Яндекс CDN, origin — basehole, выход в интернет с basehole. secondgloru как вход больше не нужен.
+**Goal:** Клиент из РФ ходит на `gloru.dpdns.org` через Яндекс CDN, origin — krotman (там уже Nginx + заглушка + панель), выход в интернет с krotman. secondgloru как вход больше не нужен.
 
-**Architecture:** Телефон → CNAME `gloru.dpdns.org` на `*.yccdn.ru` → CDN тянет origin по A-записи на IP basehole → Nginx :443 отдаёт заглушку и проксирует секретный путь на Xray VLESS+XHTTP `127.0.0.1:8080`. Reality с публичного 443 basehole снимается только после рабочего Nginx и доступа в панель мимо 443.
+**Architecture:** Телефон → CNAME `gloru.dpdns.org` на `*.yccdn.ru` → CDN тянет origin на krotman:443 → существующий Nginx отдаёт заглушку/панель и проксирует новый секретный path на Xray VLESS+XHTTP `127.0.0.1:8080`.
 
-**Tech Stack:** Nginx, Let's Encrypt, 3x-ui / Xray 26.7+, VLESS XHTTP (`uplinkHTTPMethod=GET`), Yandex Cloud CDN + Certificate Manager.
+**Tech Stack:** уже стоящий Nginx на krotman, Let's Encrypt, 3x-ui / Xray 26.7+, VLESS XHTTP (`uplinkHTTPMethod=GET`), Yandex Cloud CDN + Certificate Manager.
+
+---
+
+## Риск, из‑за которого план может не взлететь
+
+С secondgloru (РФ) до krotman уже было: ping есть, **TCP 22/80/443 — timeout**. Подсеть хостера в ТСПУ. Яндекс CDN тоже ходит на origin **из РФ**. Если с сети Яндекса до `82.22.36.141:443` так же глухо — CDN даст 502 и схема не заработает.
+
+Сначала Task 0. Если origin с РФ не открывается даже «как сайт», не переключайте CNAME `gloru.dpdns.org`.
+
+basehole в этом плане не участвует (панель там можно не трогать).
 
 ---
 
@@ -16,118 +26,123 @@
 
 | Имя | Тип | Куда | Зачем |
 |---|---|---|---|
-| `origin.gloru.dpdns.org` или второй хост `gloruorigin.dpdns.org` | A | `194.147.35.214` | сертификат origin, «домен источника» в YC |
+| `origin.gloru.dpdns.org` или второй хост `gloruorigin.dpdns.org` | A | `82.22.36.141` | сертификат origin, «домен источника» в YC |
 | `gloru.dpdns.org` | CNAME | технический домен YC | адрес в клиенте |
 
-Если dpdns не даёт поддомен `origin.gloru.dpdns.org` — завести второй бесплатный хост (`gloruorigin.dpdns.org`) и его A на basehole. В клиенте всё равно будет `gloru.dpdns.org`.
+Если dpdns не даёт поддомен — второй хост A на krotman. В клиенте всё равно `gloru.dpdns.org`.
 
-Пока CNAME не переключён, `gloru.dpdns.org` может временно смотреть на secondgloru — не сносить вход, пока CDN не проверен.
+`krotman.duckdns.org` можно оставить как есть для SSH/панели. В CDN-клиенте его не использовать.
+
+Пока CNAME не переключён, `gloru.dpdns.org` может смотреть на secondgloru.
 
 ## Чего не делать
 
-- Не менять Reality Target/SNI, сидя в панели по `https://basehole.duckdns.org/` (снова выкинет).
-- Не вешать панель 3x-ui на публичный 443 origin.
-- Не качать подписку basehole `:2096` с РФ.
-- Не ставить origin на secondgloru: ТСПУ до basehole останется.
+- Не сносить существующие `location` панели и подписки на krotman.
+- Не вешать XHTTP на тот же path, что панель.
+- Не ставить Reality на публичный 443 krotman (там уже Nginx).
+- Не качать подписку с `:2096` с РФ.
+- Не переключать CNAME, пока Task 0 и `curl https://origin…` с CDN/РФ не зелёные.
 
 ## Файлы в репозитории
 
-- `deploy/cdn/nginx-origin.conf` — Nginx origin (80 ACME + 443 заглушка + XHTTP location)
-- `deploy/cdn/inbound-xhttp.json` — inbound 3x-ui / Xray на `127.0.0.1:8080`
+- `deploy/cdn/nginx-origin.conf` — образец `location` для XHTTP (вмержить в уже стоящий сайт, не заменить всё)
+- `deploy/cdn/inbound-xhttp.json` — inbound на `127.0.0.1:8080`
 
 ---
 
-### Task 1: Доступ к панели basehole мимо 443
+### Task 0: Доедет ли Яндекс до krotman
 
-- [ ] С secondgloru: `ssh root@194.147.35.214`
-- [ ] `ss -lntp | grep -E 'x-ui|20321|2053'`
-- [ ] С ноутбука: `ssh -L 20321:127.0.0.1:20321 root@194.147.35.214` (порт подставить свой)
-- [ ] Открыть панель на `https://127.0.0.1:20321/...` и убедиться, что inbound/клиенты видны
-- [ ] Reality на 443 **пока не трогать**
+- [ ] С secondgloru: `timeout 5 bash -c 'echo >/dev/tcp/82.22.36.141/443' && echo OPEN || echo FAIL`
+- [ ] С телефона **без VPN**: `curl -I --connect-timeout 8 https://krotman.duckdns.org/`
+- [ ] Если оба FAIL — CDN из РФ, скорее всего, тоже не дотянет. Нужен другой origin (новый VPS не из этой подсети) или сначала смена IP krotman.
+- [ ] Если с телефона/дома 443 OPEN, а с secondgloru FAIL — у хостера krotman, возможно, режут только часть сетей; CDN можно пробовать, но держать запасной план.
 
-Проверка: панель открывается без `https://basehole.duckdns.org/`.
+Стоп-критерий: оба пути FAIL → этот план не начинать.
+
+---
+
+### Task 1: Панель krotman не ломать
+
+- [ ] Зайти в панель krotman так, как заходите обычно (через Nginx path, не через Reality fallback)
+- [ ] `ss -lntp | grep -E ':443|:80|:8080|nginx|xray|x-ui'`
+- [ ] На `:443` должен быть **nginx**, не xray
+- [ ] Запомнить текущие location панели/подписки — их не удалять
+
+Проверка: заглушка и панель krotman открываются как сейчас.
 
 ---
 
 ### Task 2: DNS origin
 
-- [ ] Создать A `origin.gloru.dpdns.org` (или запасной хост) → `194.147.35.214`
+- [ ] A `origin.gloru.dpdns.org` (или запасной хост) → `82.22.36.141`
 - [ ] `gloru.dpdns.org` CNAME на Яндекс **ещё не ставить**
-- [ ] Проверка: `getent ahosts origin.gloru.dpdns.org` = `194.147.35.214`
+- [ ] Проверка: `getent ahosts origin.gloru.dpdns.org` = `82.22.36.141`
 
 ---
 
-### Task 3: Сертификат origin на basehole
+### Task 3: Сертификат origin на krotman
 
-Пока Reality держит 443, выпуск только с **порта 80** (webroot) или DNS-01.
+Nginx уже на 80/443 — webroot проще, чем на basehole.
 
-- [ ] На basehole: Nginx слушает 80, `location /.well-known/acme-challenge/`
+- [ ] ACME location на 80, если ещё нет
 - [ ] `certbot certonly --webroot -w /var/www/certbot -d origin.gloru.dpdns.org --agree-tos -m EMAIL`
-- [ ] Проверка: есть `/etc/letsencrypt/live/origin.gloru.dpdns.org/fullchain.pem`
-
-Если 80 занят/закрыт — DNS-01 у регистратора dpdns.
-
----
-
-### Task 4: Nginx origin (ещё не забирать 443)
-
-- [ ] Скопировать `deploy/cdn/nginx-origin.conf`, подставить домен и пути cert
-- [ ] Придумать свой path вместо `/api/stream` (как панель и `/wegaw/`)
-- [ ] `root` заглушки: `/var/www/stub` или `/var/www/html`
-- [ ] Пока `listen 443` можно держать только на `127.0.0.1:8443` для проверки: `nginx -t && systemctl reload nginx`
-- [ ] Проверка: `curl -kI --resolve origin.gloru.dpdns.org:8443:127.0.0.1 https://127.0.0.1:8443/` → заглушка
+- [ ] Либо добавить `origin.gloru.dpdns.org` в уже существующий server_name и `certbot --nginx -d krotman.duckdns.org -d origin.gloru.dpdns.org` (не сносить старый cert)
+- [ ] Проверка: `/etc/letsencrypt/live/origin.gloru.dpdns.org/fullchain.pem` или имя в существующем live/
 
 ---
 
-### Task 5: XHTTP inbound в 3x-ui
+### Task 4: Вмержить XHTTP location в текущий Nginx
 
-- [ ] Обновить **ядро Xray** на basehole (не только панель). Нужен XHTTP `uplinkHTTPMethod=GET`
-- [ ] Панель только через туннель Task 1
-- [ ] Входящие → расширенный шаблон → вставить `deploy/cdn/inbound-xhttp.json` с тем же path, что в Nginx
-- [ ] Создать клиента, скопировать **vless://**, не sub `:2096`
-- [ ] Проверка: `ss -lntp | grep 8080` = `127.0.0.1:8080` xray
+Не подменять весь `default`/`stub`. Добавить в **тот же** server 443:
 
----
-
-### Task 6: Отдать публичный 443 Nginx
-
-Только когда панель открывается с 20321/туннеля.
-
-- [ ] Reality inbound: порт с 443 убрать или выключить (не менять dest, сидя на :443)
-- [ ] Restart Xray, `ss -lntp | grep ':443'` — Xray больше нет
-- [ ] Nginx: `listen 443 ssl http2` на `0.0.0.0`
+- [ ] Свой секретный path (не `/api/stream` из гайда, не path панели)
+- [ ] Блок как в `deploy/cdn/nginx-origin.conf` (`proxy_pass http://127.0.0.1:8080`, buffering off, timeout 600s)
+- [ ] `server_name` дополнить `origin.gloru.dpdns.org` (и старые имена оставить)
 - [ ] `nginx -t && systemctl reload nginx`
-- [ ] Проверка с secondgloru: `curl -I --resolve origin.gloru.dpdns.org:443:194.147.35.214 https://origin.gloru.dpdns.org/` → заглушка
+- [ ] Проверка: старые `/` и панель живы; `curl -kI --resolve origin.gloru.dpdns.org:443:127.0.0.1 https://127.0.0.1/секрет/` пока может быть 502 — Xray ещё нет
 
 ---
 
-### Task 7: Yandex Cloud CDN
+### Task 5: XHTTP inbound в 3x-ui на krotman
 
-- [ ] Certificate Manager: LE для **`gloru.dpdns.org`**, проверка TXT у DNS
-- [ ] Cloud CDN: origin = `origin.gloru.dpdns.org` (или IP + Host), origin protocol HTTPS :443
-- [ ] Логи и экранирование выключить (как в гайде)
+- [ ] Обновить **ядро Xray** на krotman
+- [ ] Входящие → расширенный шаблон → `deploy/cdn/inbound-xhttp.json`, path как в Nginx
+- [ ] listen `127.0.0.1:8080`, не публичный 443
+- [ ] Создать клиента, сохранить **vless://**
+- [ ] Проверка: `ss -lntp | grep 8080` = `127.0.0.1:8080` xray
+- [ ] С самого krotman: `curl -skI --resolve origin.gloru.dpdns.org:443:127.0.0.1 https://127.0.0.1/секретный-path` — уже не 502 от «connection refused»
+
+---
+
+### Task 6: Yandex Cloud CDN
+
+- [ ] Certificate Manager: LE для **`gloru.dpdns.org`**, TXT у DNS
+- [ ] Cloud CDN: origin = `origin.gloru.dpdns.org` или IP `82.22.36.141` + Host, HTTPS :443
+- [ ] Логи и экранирование выключить
+- [ ] Пока CNAME не переключать: в YC проверить статус origin (должен ходить на krotman)
+- [ ] Если origin в консоли YC красный/timeout — ТСПУ до krotman, план стоп
 - [ ] CNAME `gloru.dpdns.org` → технический домен YC
-- [ ] Подождать 15–30 минут
-- [ ] Проверка: `curl -I https://gloru.dpdns.org/` → заглушка (через CDN, не IP secondgloru)
+- [ ] 15–30 минут
+- [ ] Проверка: `curl -I https://gloru.dpdns.org/` → заглушка krotman через CDN (не IP secondgloru)
 
 ---
 
-### Task 8: Клиент
+### Task 7: Клиент
 
 - [ ] Обновить Happ / v2rayNG / v2rayN / Shadowrocket
-- [ ] Импорт **vless://** с basehole
+- [ ] Импорт **vless://** с krotman
 - [ ] Address и SNI = `gloru.dpdns.org`, port `443`, security **TLS** (не Reality)
-- [ ] Path и `uplinkHTTPMethod=GET` как на inbound
-- [ ] Проверка: `ifconfig.me` = `194.147.35.214` (или актуальный IP basehole)
-- [ ] Клиент на basehole в панели — онлайн
+- [ ] Path и GET как на inbound
+- [ ] Проверка: `ifconfig.me` = `82.22.36.141` (IP krotman)
+- [ ] Клиент в панели krotman — онлайн
 
 ---
 
-### Task 9: Выключить старый вход
+### Task 8: Выключить старый вход
 
-- [ ] Когда Task 8 стабилен — Reality на secondgloru можно не использовать
-- [ ] Каскад gloru→basehole не нужен
-- [ ] Подписку `:2096` с РФ не восстанавливать
+- [ ] Task 7 стабилен → Reality на secondgloru можно не использовать
+- [ ] Каскад на basehole не нужен
+- [ ] Панель krotman по старому Nginx-пути оставить
 
 ---
 
@@ -135,15 +150,15 @@
 
 | Симптом | Что проверить |
 |---|---|
-| Снова выкинуло из панели на :443 | Только туннель/20321 |
-| CDN 502 | origin A, Nginx 443, Host, cert origin |
-| Клиент не коннектится | ядро/клиент слишком старые, path, GET vs POST, SNI = CDN-домен |
-| ifconfig.me российский | клиент попал на secondgloru, CNAME ещё не сменился |
-| Сайты не открываются, онлайн есть | DNS клиента, IPv6 |
+| Task 0 оба FAIL | Другой origin / смена IP krotman |
+| CDN origin timeout | ТСПУ до `82.22.36.141` из сети Яндекса |
+| Панель krotman 502 | Случайно затёрли location панели |
+| Клиент не коннектится | ядро/клиент, path, GET vs POST, SNI = `gloru.dpdns.org` |
+| ifconfig.me не krotman | CNAME ещё на secondgloru |
 
 ## Готово когда
 
-- `https://gloru.dpdns.org/` — заглушка через Яндекс
+- `https://gloru.dpdns.org/` — заглушка krotman через Яндекс
 - Секретный path с телефона даёт туннель
-- Выходной IP — basehole
-- Панель basehole открывается без публичного 443
+- Выходной IP — krotman
+- Старая панель krotman на своём path жива
