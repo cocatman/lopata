@@ -59,16 +59,20 @@
 
 CDN помогает, только если **Яндекс дотягивается до origin:443**.
 
-Если `gloru.duckdns.org` — российский ящик, CDN→он живой, но дальше **он → krotman** с РФ как раньше (ТСПУ). Онлайн на krotman не появится.
+`gloru.duckdns.org` стоит в РФ, но **с него krotman и basehole уже доступны** (другой хостер/маршрут, не как secondgloru). Значит:
 
-Если duckdns-машина уже за рубежом и с неё каскад на krotman/basehole сейчас работает — CDN только прячет её IP от телефона. Так и надо.
+- CDN → origin: РФ → РФ, ТСПУ на krotman тут ни при чём.
+- origin → krotman/basehole: оставляете как сейчас.
+- CDN нужен, чтобы телефон не стучался в IP duckdns (маскировка / если с части сетей сам duckdns уже режут).
+
+С secondgloru на krotman по-прежнему нельзя опираться — это другой выход из РФ.
 
 Проверка до CNAME:
 
 - С РФ (secondgloru): `timeout 5 bash -c 'echo >/dev/tcp/IP-DUCKDNS/443'`
 - С самой duckdns-машины: каскад на krotman/basehole живой (клиент онлайн, HTTP ping)
 
-Оба «origin с РФ FAIL» и «каскад с origin мёртвый» — CDN не спасёт. Тогда krotman/basehole только с цепочки A (через Финляндию), не с duckdns.
+Проверка origin: с Яндекса/дома `https://gloru.duckdns.org/` (заглушка) должна открываться. Каскад проверять **на самой duckdns-машине**, не с secondgloru.
 
 ---
 
