@@ -442,7 +442,10 @@ done < <(ssh_listen_ports)
 ufw allow 443/tcp >/dev/null
 ufw --force enable >/dev/null
 
-pub_ip="$(curl -4 -fsS --max-time 8 https://api.ipify.org || true)"
+pub_ip="$(curl -4 -fsS --max-time 8 https://api.ipify.org \
+  || curl -4 -fsS --max-time 8 https://ifconfig.me/ip \
+  || true)"
+pub_ip="${pub_ip//$'\n'/}"
 share="$(vless_reality_uri "$UUID" "${pub_ip:-IP-ФИНЛЯНДИИ}" 443 "$PUBLIC_KEY" "$SHORT_ID" "$SNI" "$REMARK")"
 save_state
 
