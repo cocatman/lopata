@@ -59,9 +59,8 @@ curl -fsSL https://raw.githubusercontent.com/cocatman/lopata/main/deploy/install
 
 ## Вход через Яндекс CDN (вместо Reality на gloru)
 
-Клиент из РФ идёт на `gloru.dpdns.org` → Яндекс CDN → origin на **krotman** (там уже Nginx, VLESS+XHTTP).
-Сначала проверка, что из РФ до krotman:443 вообще доходят (подсеть уже попадала в ТСПУ).
-План и шаблоны: `docs/superpowers/plans/2026-09-25-yandex-cdn-xhttp.md`, `deploy/cdn/`.
+Две цепочки: `gloru.dpdns.org` (РФ Reality) → Финляндия; при желании Яндекс CDN **перед** `gloru.duckdns.org` (каскад на krotman/basehole). CDN не лечит хоп origin→krotman.
+План: `docs/superpowers/plans/2026-09-25-yandex-cdn-xhttp.md`.
 
 ## Проверка локально
 
