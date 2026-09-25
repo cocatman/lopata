@@ -6,7 +6,7 @@
 
 ---
 
-## Цепочка A — новая, без CDN
+## Сейчас делаем только цепочку A
 
 ```
 телефон → Reality gloru.dpdns.org (secondgloru, РФ)
@@ -14,14 +14,52 @@
         → интернет (IP Финляндии)
 ```
 
-Это отдельно и проще. С РФ до Финляндии ТСПУ обычно не глушит так, как подсеть krotman.
+Без CDN, без krotman, без подписки `:2096`. `gloru.dpdns.org` не трогать (не CNAME).
 
-- [ ] На FI: 3x-ui, inbound Reality (или то, что уже умеете) на 443
-- [ ] На secondgloru: исходящее на IP Финляндии, маршрут inbound телефона → этот outbound
-- [ ] Проверка с secondgloru: SOCKS/HTTP ping и `curl` через туннель → IP Финляндии
-- [ ] `gloru.dpdns.org` CNAME на Яндекс **не трогать** — это вход Reality
+### A1. Финляндия — вход Reality
 
-Делать **первой**. Не мешать с CDN на duckdns.
+- [ ] Ubuntu, `apt update`, 3x-ui
+- [ ] Панель слушает `127.0.0.1` или нестандартный порт, не светить на 443
+- [ ] Inbound: VLESS + Reality, **порт 443**, listen пустой / `0.0.0.0`
+- [ ] Target: `www.microsoft.com:443` или `nvidia.com:443` (живой сайт, не localhost)
+- [ ] Server Names / SNI: то же имя (`www.microsoft.com`)
+- [ ] Min Client Ver: **пусто**
+- [ ] Один shortId, скопировать
+- [ ] Клиент: flow `xtls-rprx-vision`, fingerprint `firefox`
+- [ ] Скопировать **vless://**, не URL подписки
+- [ ] С secondgloru: `timeout 5 bash -c 'echo >/dev/tcp/IP-FI/443' && echo OPEN`
+
+### A2. secondgloru — исходящее
+
+- [ ] Не добавлять подписку FI
+- [ ] Outbounds → вставить `vless://`
+- [ ] Address = **IP Финляндии**, port `443` (не домен, если DNS капризничает)
+- [ ] SNI / shortId / pbk / uuid / flow / firefox — как в inbound FI
+- [ ] Panel outbound = пусто / `direct`
+- [ ] Save, restart panel/Xray
+- [ ] HTTP ping этого исходящего (DNS на secondgloru уже 77.88.8.8)
+
+### A3. Маршрут и SOCKS-проверка
+
+- [ ] Маршрут: inbound **телефона** → исходящее FI
+- [ ] Временно SOCKS `127.0.0.1:10808` → то же исходящее FI
+- [ ] На secondgloru:
+
+```bash
+curl -4 --connect-timeout 15 --max-time 20 \
+  -x socks5://127.0.0.1:10808 https://ifconfig.me
+```
+
+Должен быть **IP Финляндии**. `connection to proxy closed` — сверка SNI/shortId/ключей, Target не localhost.
+
+### A4. Телефон
+
+- [ ] Клиент на `gloru.dpdns.org` (как сейчас, Reality входа)
+- [ ] Сайт: `https://ifconfig.me` = Финляндия
+- [ ] На FI в панели этот UUID онлайн
+- [ ] SOCKS 10808 потом можно выключить
+
+Стоп, если A1 порт 443 с secondgloru FAIL — тогда FI IP тоже режут, писать хостер/менять IP. Цепочку B (CDN) не начинать, пока A4 не зелёный.
 
 ---
 
@@ -69,10 +107,8 @@ CDN помогает, только если **Яндекс дотягивает�
 
 Проверка до CNAME:
 
-- С РФ (secondgloru): `timeout 5 bash -c 'echo >/dev/tcp/IP-DUCKDNS/443'`
-- С самой duckdns-машины: каскад на krotman/basehole живой (клиент онлайн, HTTP ping)
-
-Проверка origin: с Яндекса/дома `https://gloru.duckdns.org/` (заглушка) должна открываться. Каскад проверять **на самой duckdns-машине**, не с secondgloru.
+- С дома/телефона без VPN: `https://gloru.duckdns.org/` (заглушка) открывается — Яндекс origin, скорее всего, тоже доедет.
+- С **самой** duckdns-машины: каскад на krotman/basehole живой. С secondgloru это не проверять.
 
 ---
 
